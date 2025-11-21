@@ -1,0 +1,129 @@
+.player {
+  border: 2px solid #ddd;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 10px;
+  background-color: #f9f9f9;
+  transition: all 0.3s ease;
+  min-width: 250px;
+}
+
+.player.active {
+  border-color: #4CAF50;
+  background-color: #e8f5e9;
+  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+}
+
+.player-info {
+  margin-bottom: 15px;
+}
+
+.player-info h3 {
+  margin: 0 0 10px 0;
+  color: #333;
+  font-size: 20px;
+}
+
+.player-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  color: #666;
+}
+
+.player-stats span {
+  background-color: #e0e0e0;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.player-status {
+  margin-top: 10px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-weight: bold;
+  text-transform: uppercase;
+  display: inline-block;
+}
+
+.status-blackjack {
+  background-color: #ffd700;
+  color: #333;
+}
+
+.status-win {
+  background-color: #4CAF50;
+  color: white;
+}
+
+.status-lose {
+  background-color: #f44336;
+  color: white;
+}
+
+.status-push {
+  background-color: #ff9800;
+  color: white;
+}
+
+.player-actions {
+  margin-top: 15px;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.action-btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.action-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.action-btn:active {
+  transform: translateY(0);
+}
+
+.hit-btn {
+  background-color: #2196F3;
+  color: white;
+}
+
+.hit-btn:hover {
+  background-color: #1976D2;
+}
+
+.stand-btn {
+  background-color: #FF5722;
+  color: white;
+}
+
+.stand-btn:hover {
+  background-color: #E64A19;
+}
+
+.double-btn {
+  background-color: #9C27B0;
+  color: white;
+}
+
+.double-btn:hover {
+  background-color: #7B1FA2;
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
