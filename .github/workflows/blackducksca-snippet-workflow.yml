@@ -1,7 +1,7 @@
 name: Black Duck Snippet Scan
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, edited]
 
 jobs:
@@ -14,10 +14,12 @@ jobs:
       issues: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (PR head)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Explicitly check out the PR head so we scan the proposed changes
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Generate PR diff
         run: |
@@ -31,8 +33,10 @@ jobs:
           git diff --binary "$BASE_SHA" "$HEAD_SHA" > pr.diff || true
           ls -l pr.diff || true
 
-      - name: Send diff to Black Duck Snippet API
-        # `BLACKDUCKSCA_URL` is expected to be a repository variable (not a secret)
+      - name: Get AI License Compliance API auth token
+        # Obtain an auth token from the Black Duck Authenticate endpoint using the
+        # repository secret `BLACKDUCKSCA_TOKEN`. The response will be saved to
+        # `token.json` and the extracted token to `auth_token.txt` for subsequent calls.
         env:
           BLACKDUCKSCA_URL: ${{ vars.BLACKDUCKSCA_URL }}
           BLACKDUCKSCA_TOKEN: ${{ secrets.BLACKDUCKSCA_TOKEN }}
@@ -42,14 +46,60 @@ jobs:
             echo "Add `BLACKDUCKSCA_URL` under Settings → Variables and `BLACKDUCKSCA_TOKEN` under Settings → Secrets."
             exit 1
           fi
-          API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/v1/snippets"
+          AUTH_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/tokens/authenticate"
+          echo "Requesting auth token from $AUTH_ENDPOINT"
+
+          # Request token and save raw response
+          curl -s -X POST "$AUTH_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: token $BLACKDUCKSCA_TOKEN" \
+            -d '{}' -o token.json || true
+
+          echo "--- raw token response ---"
+          cat token.json || true
+
+          # Try to extract a token from common JSON fields using jq (install if needed)
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y && sudo apt-get install -y jq || true
+          fi
+
+          AUTH_TOKEN=""
+          if command -v jq >/dev/null 2>&1; then
+            AUTH_TOKEN=$(jq -r '.bearerToken // .token // .auth_token // .access_token // .tokenValue // .value // .data // empty' token.json 2>/dev/null || true)
+          fi
+
+          # Fallback to raw content if jq extraction failed
+          if [ -z "$AUTH_TOKEN" ] || [ "$AUTH_TOKEN" = "null" ]; then
+            AUTH_TOKEN=$(tr -d '\r\n "' < token.json)
+          fi
+
+          if [ -z "$AUTH_TOKEN" ]; then
+            echo "Failed to obtain auth token from $AUTH_ENDPOINT"
+            exit 1
+          fi
+
+          echo "Auth token extracted (truncated): ${AUTH_TOKEN:0:8}..."
+          echo "$AUTH_TOKEN" > auth_token.txt
+
+      - name: Send diff to Black Duck Snippet API
+        env:
+          BLACKDUCKSCA_URL: ${{ vars.BLACKDUCKSCA_URL }}
+        run: |
+          if [ ! -f auth_token.txt ]; then
+            echo "Missing auth token file (auth_token.txt)"
+            exit 1
+          fi
+          AUTH_TOKEN=$(cat auth_token.txt)
+          API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/snippet-matching"
           echo "Posting pr.diff to $API_ENDPOINT"
 
-          # POST the PR diff as a file. Adjust endpoint/path if your Black Duck instance expects a different URI.
+          # The snippet-matching endpoint expects a plain text payload containing
+          # the source to scan. Send the diff file as `text/plain` in the request
+          # body using --data-binary to preserve content.
           HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $BLACKDUCKSCA_TOKEN" \
-            -F "file=@pr.diff;type=application/octet-stream" \
-            -F "metadata={\"repository\":\"${{ github.repository }}\",\"pull_request\":${{ github.event.number }}};type=application/json" \
+            -H "Authorization: Bearer $AUTH_TOKEN" \
+            -H "Content-Type: text/plain" \
+            --data-binary @pr.diff \
             "$API_ENDPOINT")
 
           echo "HTTP status: $HTTP_STATUS"
