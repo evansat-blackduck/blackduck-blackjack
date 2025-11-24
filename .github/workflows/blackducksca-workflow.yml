@@ -46,6 +46,6 @@ jobs:
           ### FIX PULL REQUEST CREATION
           blackducksca_fixpr_enabled: true
           ### SARIF report parameters
-          blackducksca_reports_sarif_create: true  # Create SARIF report and upload it as artifact
-          blackducksca_upload_sarif_report: true  # Upload SARIF report in GitHub Advanced Security tab
+          blackducksca_reports_sarif_create: false  # Create SARIF report and upload it as artifact
+          blackducksca_upload_sarif_report: false  # Upload SARIF report in GitHub Advanced Security tab
           detect_args: '--detect.accuracy.required=NONE --detect.blackduck.signature.scanner.snippet.matching=SNIPPET_MATCHING --detect.blackduck.signature.scanner.upload.source.mode=true'
