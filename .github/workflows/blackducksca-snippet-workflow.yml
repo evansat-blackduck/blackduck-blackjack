@@ -88,7 +88,7 @@ jobs:
             exit 1
           fi
           AUTH_TOKEN=$(cat auth_token.txt)
-          API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/v1/snippets"
+          API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/snippet-matching"
           echo "Posting pr.diff to $API_ENDPOINT"
 
           HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
