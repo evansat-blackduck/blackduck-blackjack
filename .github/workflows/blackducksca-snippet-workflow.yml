@@ -42,7 +42,7 @@ jobs:
             echo "Add `BLACKDUCKSCA_URL` under Settings → Variables and `BLACKDUCKSCA_TOKEN` under Settings → Secrets."
             exit 1
           fi
-          API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/v1/snippets"
+          API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/snippet-matching"
           echo "Posting pr.diff to $API_ENDPOINT"
 
           # POST the PR diff as a file. Adjust endpoint/path if your Black Duck instance expects a different URI.
