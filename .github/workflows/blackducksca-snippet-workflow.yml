@@ -124,7 +124,7 @@ jobs:
         uses: actions/github-script@v6
         with:
           # Explicitly pass the workflow token to the action
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GH_PAT }}
           script: |
             const fs = require('fs');
             const { owner, repo } = context.repo;
