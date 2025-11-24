@@ -8,6 +8,9 @@ permissions:
   pull-requests: write
   issues: write
 
+env:
+  GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited]
