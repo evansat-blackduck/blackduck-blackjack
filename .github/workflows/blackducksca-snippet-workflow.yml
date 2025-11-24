@@ -1,0 +1,84 @@
+name: Black Duck Snippet Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  snippet-scan:
+    name: Scan PR with Black Duck Snippet API
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate PR diff
+        run: |
+          echo "Generating diff between base and head..."
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "Base: $BASE_SHA"
+          echo "Head: $HEAD_SHA"
+          # Ensure refs are available and create a binary diff of the PR
+          git fetch --no-tags --prune --depth=1 origin "+refs/heads/*:refs/remotes/origin/*" || true
+          git diff --binary "$BASE_SHA" "$HEAD_SHA" > pr.diff || true
+          ls -l pr.diff || true
+
+      - name: Send diff to Black Duck Snippet API
+        # `BLACKDUCKSCA_URL` is expected to be a repository variable (not a secret)
+        env:
+          BLACKDUCKSCA_URL: ${{ vars.BLACKDUCKSCA_URL }}
+          BLACKDUCKSCA_TOKEN: ${{ secrets.BLACKDUCKSCA_TOKEN }}
+        run: |
+          if [ -z "$BLACKDUCKSCA_URL" ] || [ -z "$BLACKDUCKSCA_TOKEN" ]; then
+            echo "Missing BLACKDUCKSCA_URL (repository variable) or BLACKDUCKSCA_TOKEN (secret)"
+            echo "Add `BLACKDUCKSCA_URL` under Settings → Variables and `BLACKDUCKSCA_TOKEN` under Settings → Secrets."
+            exit 1
+          fi
+          API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/v1/snippets"
+          echo "Posting pr.diff to $API_ENDPOINT"
+
+          # POST the PR diff as a file. Adjust endpoint/path if your Black Duck instance expects a different URI.
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $BLACKDUCKSCA_TOKEN" \
+            -F "file=@pr.diff;type=application/octet-stream" \
+            -F "metadata={\"repository\":\"${{ github.repository }}\",\"pull_request\":${{ github.event.number }}};type=application/json" \
+            "$API_ENDPOINT")
+
+          echo "HTTP status: $HTTP_STATUS"
+          cat response.json || true
+          if [ "$HTTP_STATUS" -ge 400 ]; then
+            echo "Black Duck Snippet API returned an error (status $HTTP_STATUS)."
+            exit 1
+          fi
+
+      - name: Comment PR with Black Duck results
+        uses: actions/github-script@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            let body = '### Black Duck Snippet Scan Results\n';
+            if (fs.existsSync('response.json')) {
+              const resp = fs.readFileSync('response.json','utf8');
+              // Truncate if extremely large to avoid hitting comment size limits
+              const maxLen = 64000;
+              let display = resp;
+              if (display.length > maxLen) {
+                display = display.slice(0, maxLen) + '\n... (truncated)';
+              }
+              body += '<details><summary>Full response</summary>\n\n```json\n' + display + '\n```\n</details>';
+            } else {
+              body += 'No response captured from Black Duck.';
+            }
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
