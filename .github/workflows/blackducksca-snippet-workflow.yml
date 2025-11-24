@@ -91,10 +91,13 @@ jobs:
           API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/snippet-matching"
           echo "Posting pr.diff to $API_ENDPOINT"
 
+          # The snippet-matching endpoint expects a plain text payload containing
+          # the source to scan. Send the diff file as `text/plain` in the request
+          # body using --data-binary to preserve content.
           HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $AUTH_TOKEN" \
-            -F "file=@pr.diff;type=application/octet-stream" \
-            -F "metadata={\"repository\":\"${{ github.repository }}\",\"pull_request\":${{ github.event.number }}};type=application/json" \
+            -H "Content-Type: text/plain" \
+            --data-binary @pr.diff \
             "$API_ENDPOINT")
 
           echo "HTTP status: $HTTP_STATUS"
