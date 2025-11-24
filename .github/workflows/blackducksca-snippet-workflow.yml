@@ -1,5 +1,13 @@
 name: Black Duck Snippet Scan
 
+# Request repository-level permissions for the workflow. Organization or repository
+# settings can still restrict these; see repository Actions settings if you still
+# get authorization errors.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited]
@@ -111,9 +119,9 @@ jobs:
 
       - name: Comment PR with Black Duck results
         uses: actions/github-script@v6
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # Explicitly pass the workflow token to the action
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const { owner, repo } = context.repo;
