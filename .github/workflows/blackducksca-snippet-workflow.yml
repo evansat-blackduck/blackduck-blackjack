@@ -136,47 +136,62 @@ jobs:
                 const respText = fs.readFileSync('response.json', 'utf8');
                 const response = JSON.parse(respText);
                 
-                // Check if snippetMatches exists and has content
-                if (response.snippetMatches && Array.isArray(response.snippetMatches) && response.snippetMatches.length > 0) {
-                  body += `🔍 **Found ${response.snippetMatches.length} snippet match(es):**\n\n`;
+                // Check if snippetMatches exists and process the nested structure
+                if (response.snippetMatches && typeof response.snippetMatches === 'object') {
+                  const matchCategories = Object.keys(response.snippetMatches);
+                  let totalMatches = 0;
                   
-                  response.snippetMatches.forEach((match, index) => {
-                    body += `#### Match ${index + 1}\n`;
-                    
-                    if (match.file) {
-                      body += `- **File**: \`${match.file}\`\n`;
+                  // Count total matches across all categories
+                  matchCategories.forEach(category => {
+                    if (Array.isArray(response.snippetMatches[category])) {
+                      totalMatches += response.snippetMatches[category].length;
                     }
-                    if (match.matchedFilePath) {
-                      body += `- **Matched File Path**: \`${match.matchedFilePath}\`\n`;
-                    }
-                    if (match.startLine !== undefined && match.endLine !== undefined) {
-                      body += `- **Lines**: ${match.startLine}-${match.endLine}\n`;
-                    }
-                    if (match.component) {
-                      body += `- **Component**: ${match.component.name || 'Unknown'}\n`;
-                      if (match.component.version) {
-                        body += `- **Version**: ${match.component.version}\n`;
-                      }
-                    }
-                    if (match.licenseDisplayName) {
-                      body += `- **License**: ${match.licenseDisplayName}\n`;
-                    }
-                    if (match.license && match.license.length > 0) {
-                      const licenses = match.license.map(l => l.name || l).join(', ');
-                      body += `- **License(s)**: ${licenses}\n`;
-                    }
-                    if (match.usage && match.usage !== 'UNKNOWN') {
-                      body += `- **Usage**: ${match.usage}\n`;
-                    }
-                    if (match.matchType) {
-                      body += `- **Match Type**: ${match.matchType}\n`;
-                    }
-                    if (match.score !== undefined) {
-                      body += `- **Score**: ${match.score}\n`;
-                    }
-                    
-                    body += '\n';
                   });
+                  
+                  if (totalMatches > 0) {
+                    body += `🔍 **Found ${totalMatches} snippet match(es) across ${matchCategories.length} license categor${matchCategories.length === 1 ? 'y' : 'ies'}:**\n\n`;
+                    
+                    let matchIndex = 1;
+                    
+                    // Process each license category
+                    matchCategories.forEach(category => {
+                      if (response.snippetMatches[category] && response.snippetMatches[category].length > 0) {
+                        body += `### ${category.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase())} (${response.snippetMatches[category].length} match${response.snippetMatches[category].length === 1 ? '' : 'es'})\n\n`;
+                        
+                        response.snippetMatches[category].forEach((match) => {
+                          body += `#### Match ${matchIndex++}\n`;
+                          
+                          if (match.projectName) {
+                            body += `- **Project**: ${match.projectName}\n`;
+                          }
+                          if (match.releaseVersion) {
+                            body += `- **Version**: ${match.releaseVersion}\n`;
+                          }
+                          if (match.matchedFilePath) {
+                            body += `- **Matched File Path**: \`${match.matchedFilePath}\`\n`;
+                          }
+                          if (match.licenseDefinition && match.licenseDefinition.licenseDisplayName) {
+                            body += `- **License**: ${match.licenseDefinition.licenseDisplayName}\n`;
+                          }
+                          if (match.regions) {
+                            const regions = match.regions;
+                            if (regions.sourceStartLines && regions.sourceEndLines) {
+                              body += `- **Source Lines**: ${regions.sourceStartLines.join(', ')}-${regions.sourceEndLines.join(', ')}\n`;
+                            }
+                            if (regions.matchedStartLines && regions.matchedEndLines) {
+                              body += `- **Matched Lines**: ${regions.matchedStartLines.join(', ')}-${regions.matchedEndLines.join(', ')}\n`;
+                            }
+                          }
+                          
+                          body += '\n';
+                        });
+                        
+                        body += '\n';
+                      }
+                    });
+                  } else {
+                    body += '✅ **No snippet matches found** - No known open source code detected in the pull request changes.\n\n';
+                  }
                 } else {
                   body += '✅ **No snippet matches found** - No known open source code detected in the pull request changes.\n\n';
                 }
