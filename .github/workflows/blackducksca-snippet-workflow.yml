@@ -1,7 +1,18 @@
 name: Black Duck Snippet Scan
 
+# Request repository-level permissions for the workflow. Organization or repository
+# settings can still restrict these; see repository Actions settings if you still
+# get authorization errors.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened, edited]
 
 jobs:
@@ -10,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: write
 
     steps:
@@ -111,24 +122,103 @@ jobs:
 
       - name: Comment PR with Black Duck results
         uses: actions/github-script@v6
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # Explicitly pass the workflow token to the action
+          github-token: ${{ secrets.GH_PAT }}
           script: |
             const fs = require('fs');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
-            let body = '### Black Duck Snippet Scan Results\n';
+            let body = '### Black Duck Snippet Scan Results\n\n';
+            
             if (fs.existsSync('response.json')) {
-              const resp = fs.readFileSync('response.json','utf8');
-              // Truncate if extremely large to avoid hitting comment size limits
-              const maxLen = 64000;
-              let display = resp;
-              if (display.length > maxLen) {
-                display = display.slice(0, maxLen) + '\n... (truncated)';
+              try {
+                const respText = fs.readFileSync('response.json', 'utf8');
+                const response = JSON.parse(respText);
+                
+                // Check if snippetMatches exists and process the nested structure
+                if (response.snippetMatches && typeof response.snippetMatches === 'object') {
+                  const matchCategories = Object.keys(response.snippetMatches);
+                  let totalMatches = 0;
+                  
+                  // Count total matches across all categories
+                  matchCategories.forEach(category => {
+                    if (Array.isArray(response.snippetMatches[category])) {
+                      totalMatches += response.snippetMatches[category].length;
+                    }
+                  });
+                  
+                  if (totalMatches > 0) {
+                    body += `🔍 **Found ${totalMatches} snippet match(es) across ${matchCategories.length} license categor${matchCategories.length === 1 ? 'y' : 'ies'}:**\n\n`;
+                    
+                    let matchIndex = 1;
+                    
+                    // Process each license category
+                    matchCategories.forEach(category => {
+                      if (response.snippetMatches[category] && response.snippetMatches[category].length > 0) {
+                        body += `### ${category.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase())} (${response.snippetMatches[category].length} match${response.snippetMatches[category].length === 1 ? '' : 'es'})\n\n`;
+                        
+                        response.snippetMatches[category].forEach((match) => {
+                          body += `#### Match ${matchIndex++}\n`;
+                          
+                          if (match.projectName) {
+                            body += `- **Project**: ${match.projectName}\n`;
+                          }
+                          if (match.releaseVersion) {
+                            body += `- **Version**: ${match.releaseVersion}\n`;
+                          }
+                          if (match.matchedFilePath) {
+                            body += `- **Matched File Path**: \`${match.matchedFilePath}\`\n`;
+                          }
+                          if (match.licenseDefinition && match.licenseDefinition.licenseDisplayName) {
+                            body += `- **License**: ${match.licenseDefinition.licenseDisplayName}\n`;
+                          }
+                          if (match.regions) {
+                            const regions = match.regions;
+                            if (regions.sourceStartLines && regions.sourceEndLines) {
+                              body += `- **Source Lines**: ${regions.sourceStartLines.join(', ')}-${regions.sourceEndLines.join(', ')}\n`;
+                            }
+                            if (regions.matchedStartLines && regions.matchedEndLines) {
+                              body += `- **Matched Lines**: ${regions.matchedStartLines.join(', ')}-${regions.matchedEndLines.join(', ')}\n`;
+                            }
+                          }
+                          
+                          body += '\n';
+                        });
+                        
+                        body += '\n';
+                      }
+                    });
+                  } else {
+                    body += '✅ **No snippet matches found** - No known open source code detected in the pull request changes.\n\n';
+                  }
+                } else {
+                  body += '✅ **No snippet matches found** - No known open source code detected in the pull request changes.\n\n';
+                }
+                
+                // Add raw response as collapsible section for debugging
+                const maxLen = 32000;  // Reduced size to leave room for formatted content
+                let rawDisplay = respText;
+                if (rawDisplay.length > maxLen) {
+                  rawDisplay = rawDisplay.slice(0, maxLen) + '\n... (truncated)';
+                }
+                body += '<details><summary>🔧 Raw API Response (for debugging)</summary>\n\n```json\n' + rawDisplay + '\n```\n</details>';
+                
+              } catch (parseError) {
+                body += '⚠️ **Error parsing Black Duck response**: Could not parse JSON response.\n\n';
+                console.error('JSON parse error:', parseError);
+                
+                // Fall back to raw content display
+                const respText = fs.readFileSync('response.json', 'utf8');
+                const maxLen = 32000;
+                let display = respText;
+                if (display.length > maxLen) {
+                  display = display.slice(0, maxLen) + '\n... (truncated)';
+                }
+                body += '<details><summary>Raw response content</summary>\n\n```\n' + display + '\n```\n</details>';
               }
-              body += '<details><summary>Full response</summary>\n\n```json\n' + display + '\n```\n</details>';
             } else {
-              body += 'No response captured from Black Duck.';
+              body += '❌ **No response captured from Black Duck** - The API request may have failed.\n\n';
             }
+            
             await github.rest.issues.createComment({ owner, repo, issue_number, body });
