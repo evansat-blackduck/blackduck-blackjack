@@ -146,6 +146,9 @@ jobs:
                     if (match.file) {
                       body += `- **File**: \`${match.file}\`\n`;
                     }
+                    if (match.matchedFilePath) {
+                      body += `- **Matched File Path**: \`${match.matchedFilePath}\`\n`;
+                    }
                     if (match.startLine !== undefined && match.endLine !== undefined) {
                       body += `- **Lines**: ${match.startLine}-${match.endLine}\n`;
                     }
@@ -154,6 +157,9 @@ jobs:
                       if (match.component.version) {
                         body += `- **Version**: ${match.component.version}\n`;
                       }
+                    }
+                    if (match.licenseDisplayName) {
+                      body += `- **License**: ${match.licenseDisplayName}\n`;
                     }
                     if (match.license && match.license.length > 0) {
                       const licenses = match.license.map(l => l.name || l).join(', ');
