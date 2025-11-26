@@ -1,11 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import Player from './Player';
 import Hand from './Hand';
-import { 
-  createDeck, 
-  shuffleDeck, 
-  dealCard, 
-  dealInitialCards 
+import Auth from './Auth';
+import Leaderboard from './Leaderboard';
+import {
+  createDeck,
+  shuffleDeck,
+  dealCard,
+  dealInitialCards
 } from '../utils/deck';
 import {
   calculateHandValue,
@@ -16,12 +18,13 @@ import {
   calculatePayout,
   revealDealerCard
 } from '../utils/blackjack';
-import { 
-  GAME_STATES, 
-  PLAYER_ACTIONS, 
+import {
+  GAME_STATES,
+  PLAYER_ACTIONS,
   HAND_RESULTS,
-  MAX_PLAYERS 
+  MAX_PLAYERS
 } from '../constants/cards';
+import apiService from '../services/api';
 import './Game.css';
 
 const Game = () => {
@@ -32,6 +35,39 @@ const Game = () => {
   const [players, setPlayers] = useState([]);
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
   const [message, setMessage] = useState('Welcome to Blackjack! Select number of players to start.');
+  
+  // Authentication state
+  const [showAuth, setShowAuth] = useState(false);
+  const [authenticatedPlayer, setAuthenticatedPlayer] = useState(null);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+
+  // Check for existing authentication on component mount
+  useEffect(() => {
+    if (apiService.isAuthenticated()) {
+      loadPlayerProfile();
+    }
+  }, []);
+
+  const loadPlayerProfile = async () => {
+    try {
+      const response = await apiService.getPlayerProfile();
+      setAuthenticatedPlayer(response.player);
+    } catch (error) {
+      console.error('Failed to load player profile:', error);
+      apiService.logout();
+    }
+  };
+
+  const handleLogin = (player) => {
+    setAuthenticatedPlayer(player);
+    setMessage(`Welcome back, ${player.username}! Your stats: ${player.totalWins} wins, ${player.totalGames} games played.`);
+  };
+
+  const handleLogout = () => {
+    apiService.logout();
+    setAuthenticatedPlayer(null);
+    setMessage('Logged out. You can still play as guest, but progress won\'t be saved.');
+  };
 
   // Initialize players
   const initializePlayers = useCallback((count) => {
@@ -101,26 +137,60 @@ const Game = () => {
     }
   }, [gameState]);
 
-  // Calculate game results
-  const calculateResults = useCallback((finalDealerHand) => {
-    setPlayers(prev => prev.map(player => {
-      if (player.status === HAND_RESULTS.BUST) {
-        return player; // Already busted
-      }
-      
-      const result = compareHands(player.hand, finalDealerHand);
-      const payout = calculatePayout(player.bet, result);
-      
-      return {
-        ...player,
-        status: result,
-        balance: player.balance + payout
+  // Record game result to database
+  const recordGameResult = async (player, result, dealerHandValue) => {
+    if (!authenticatedPlayer || numPlayers > 1) {
+      return; // Only record for authenticated single-player games
+    }
+
+    try {
+      const gameData = {
+        result: result,
+        betAmount: player.bet,
+        payoutAmount: calculatePayout(player.bet, result),
+        playerHandValue: calculateHandValue(player.hand),
+        dealerHandValue: dealerHandValue,
+        isBlackjack: result === HAND_RESULTS.BLACKJACK
       };
-    }));
+
+      await apiService.recordGame(gameData);
+      // Refresh player profile to get updated stats
+      await loadPlayerProfile();
+    } catch (error) {
+      console.error('Failed to record game result:', error);
+    }
+  };
+
+  // Calculate game results
+  const calculateResults = useCallback(async (finalDealerHand) => {
+    const dealerHandValue = calculateHandValue(finalDealerHand);
     
+    const updatedPlayers = await Promise.all(
+      players.map(async (player, index) => {
+        if (player.status === HAND_RESULTS.BUST) {
+          return player; // Already busted, keep as is
+        }
+        
+        const result = compareHands(player.hand, finalDealerHand);
+        const payout = calculatePayout(player.bet, result);
+        
+        // Record result for authenticated players (single player only)
+        if (authenticatedPlayer && numPlayers === 1 && index === 0) {
+          await recordGameResult(player, result, dealerHandValue);
+        }
+        
+        return {
+          ...player,
+          status: result,
+          balance: player.balance + payout
+        };
+      })
+    );
+    
+    setPlayers(updatedPlayers);
     setGameState(GAME_STATES.GAME_OVER);
     setMessage('Game Over! Click "New Round" to play again.');
-  }, []);
+  }, [players, authenticatedPlayer, numPlayers]);
 
   // Play dealer's hand
   const playDealerHand = useCallback(() => {
@@ -190,8 +260,16 @@ const Game = () => {
           return updated;
         });
         
-        // Check if busted
+        // Check if busted and record result
         if (isBust(newHand)) {
+          // Record bust result for authenticated players
+          if (authenticatedPlayer && numPlayers === 1 && playerIndex === 0) {
+            recordGameResult(
+              { ...player, hand: newHand, bet: player.bet },
+              HAND_RESULTS.BUST,
+              calculateHandValue(dealerHand)
+            );
+          }
           setTimeout(() => moveToNextPlayer(), 1000);
         }
         break;
@@ -249,7 +327,38 @@ const Game = () => {
 
   return (
     <div className="game">
-      <h1 className="game-title">♠♥ Blackjack ♦♣</h1>
+      <div className="game-header">
+        <h1 className="game-title">♠♥ Blackjack ♦♣</h1>
+        
+        <div className="header-controls">
+          {authenticatedPlayer ? (
+            <div className="player-info">
+              <span>Welcome, {authenticatedPlayer.username}!</span>
+              <span className="player-stats">
+                {authenticatedPlayer.totalWins}W / {authenticatedPlayer.totalGames}G
+              </span>
+              <button className="logout-btn" onClick={handleLogout}>
+                Logout
+              </button>
+            </div>
+          ) : (
+            <button className="login-btn" onClick={() => setShowAuth(true)}>
+              Login / Register
+            </button>
+          )}
+          
+          <button
+            className="leaderboard-btn"
+            onClick={() => setShowLeaderboard(!showLeaderboard)}
+          >
+            🏆 Leaderboard
+          </button>
+        </div>
+      </div>
+
+      {showLeaderboard && (
+        <Leaderboard isVisible={showLeaderboard} />
+      )}
       
       {gameState === GAME_STATES.WAITING && (
         <div className="game-setup">
@@ -339,6 +448,13 @@ const Game = () => {
             New Game
           </button>
         </div>
+      )}
+
+      {showAuth && (
+        <Auth
+          onLogin={handleLogin}
+          onClose={() => setShowAuth(false)}
+        />
       )}
     </div>
   );
