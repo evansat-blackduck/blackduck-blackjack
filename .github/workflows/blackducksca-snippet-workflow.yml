@@ -32,17 +32,49 @@ jobs:
           # Explicitly check out the PR head so we scan the proposed changes
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Generate PR diff
+      - name: Extract PR file contents (first 1000 chars each)
         run: |
-          echo "Generating diff between base and head..."
+          echo "Extracting first 1000 characters from each file in PR..."
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           echo "Base: $BASE_SHA"
           echo "Head: $HEAD_SHA"
-          # Ensure refs are available and create a binary diff of the PR
+          
+          # Ensure refs are available
           git fetch --no-tags --prune --depth=1 origin "+refs/heads/*:refs/remotes/origin/*" || true
-          git diff --binary "$BASE_SHA" "$HEAD_SHA" > pr.diff || true
-          ls -l pr.diff || true
+          
+          # Get list of changed files (added, modified, copied, renamed)
+          CHANGED_FILES=$(git diff --name-only --diff-filter=AMCR "$BASE_SHA" "$HEAD_SHA" || true)
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Create a combined file with snippets from each changed file
+          > file_snippets.txt
+          echo "=== PR File Snippets Analysis ===" >> file_snippets.txt
+          echo "Pull Request: ${{ github.event.pull_request.number }}" >> file_snippets.txt
+          echo "Repository: ${{ github.repository }}" >> file_snippets.txt
+          echo "Changed files: $(echo "$CHANGED_FILES" | wc -l)" >> file_snippets.txt
+          echo "" >> file_snippets.txt
+          
+          file_count=0
+          while IFS= read -r file; do
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              file_count=$((file_count + 1))
+              echo "Processing file: $file"
+              echo "=== FILE $file_count: $file ===" >> file_snippets.txt
+              
+              # Get first 1000 characters of the file
+              head -c 1000 "$file" >> file_snippets.txt 2>/dev/null || echo "[Binary or unreadable file]" >> file_snippets.txt
+              echo "" >> file_snippets.txt
+              echo "--- END OF $file ---" >> file_snippets.txt
+              echo "" >> file_snippets.txt
+            fi
+          done <<< "$CHANGED_FILES"
+          
+          echo "Processed $file_count files"
+          ls -l file_snippets.txt || true
+          echo "First 200 characters of combined snippets:"
+          head -c 200 file_snippets.txt || true
 
       - name: Get AI License Compliance API auth token
         # Obtain an auth token from the Black Duck Authenticate endpoint using the
@@ -92,7 +124,7 @@ jobs:
           echo "Auth token extracted (truncated): ${AUTH_TOKEN:0:8}..."
           echo "$AUTH_TOKEN" > auth_token.txt
 
-      - name: Send diff to Black Duck Snippet API
+      - name: Send file snippets to Black Duck Snippet API
         env:
           BLACKDUCKSCA_URL: ${{ vars.BLACKDUCKSCA_URL }}
         run: |
@@ -100,23 +132,38 @@ jobs:
             echo "Missing auth token file (auth_token.txt)"
             exit 1
           fi
+          
+          if [ ! -f file_snippets.txt ]; then
+            echo "No file snippets to scan (file_snippets.txt not found)"
+            echo '{"snippetMatches": {}}' > response.json
+            exit 0
+          fi
+          
           AUTH_TOKEN=$(cat auth_token.txt)
           API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/snippet-matching"
-          echo "Posting pr.diff to $API_ENDPOINT"
+          echo "Posting file snippets to $API_ENDPOINT"
+          
+          # Get file size for logging
+          SNIPPET_SIZE=$(wc -c < file_snippets.txt)
+          echo "Sending $SNIPPET_SIZE characters of file snippets"
 
           # The snippet-matching endpoint expects a plain text payload containing
-          # the source to scan. Send the diff file as `text/plain` in the request
+          # the source to scan. Send the file snippets as `text/plain` in the request
           # body using --data-binary to preserve content.
           HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $AUTH_TOKEN" \
             -H "Content-Type: text/plain" \
-            --data-binary @pr.diff \
+            --data-binary @file_snippets.txt \
             "$API_ENDPOINT")
 
           echo "HTTP status: $HTTP_STATUS"
-          cat response.json || true
+          echo "Response preview (first 500 chars):"
+          head -c 500 response.json || true
+          
           if [ "$HTTP_STATUS" -ge 400 ]; then
             echo "Black Duck Snippet API returned an error (status $HTTP_STATUS)."
+            echo "Full error response:"
+            cat response.json || true
             exit 1
           fi
 
@@ -129,7 +176,8 @@ jobs:
             const fs = require('fs');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
-            let body = '### Black Duck Snippet Scan Results\n\n';
+            let body = '### Black Duck Snippet Scan Results\n';
+            body += '*Scanned first 1000 characters of each changed file in this PR*\n\n';
             
             if (fs.existsSync('response.json')) {
               try {
