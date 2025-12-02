@@ -32,9 +32,9 @@ jobs:
           # Explicitly check out the PR head so we scan the proposed changes
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Extract PR file contents (first 1000 chars each)
+      - name: Extract PR file contents (300-50000 char limit)
         run: |
-          echo "Extracting first 1000 characters from each file in PR..."
+          echo "Extracting file contents from PR (min 300, max 50000 total chars)..."
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           echo "Base: $BASE_SHA"
@@ -50,31 +50,100 @@ jobs:
           
           # Create a combined file with snippets from each changed file
           > file_snippets.txt
-          echo "=== PR File Snippets Analysis ===" >> file_snippets.txt
-          echo "Pull Request: ${{ github.event.pull_request.number }}" >> file_snippets.txt
-          echo "Repository: ${{ github.repository }}" >> file_snippets.txt
-          echo "Changed files: $(echo "$CHANGED_FILES" | wc -l)" >> file_snippets.txt
-          echo "" >> file_snippets.txt
           
+          # Initialize counters and limits
+          MAX_TOTAL_CHARS=50000
+          MIN_FILE_CHARS=300
+          current_size=0
           file_count=0
+          skipped_files=0
+          
+          # Add header (reserve chars for metadata)
+          {
+            echo "=== PR File Snippets Analysis ==="
+            echo "Pull Request: ${{ github.event.pull_request.number }}"
+            echo "Repository: ${{ github.repository }}"
+            echo ""
+          } >> file_snippets.txt
+          current_size=$(wc -c < file_snippets.txt)
+          
           while IFS= read -r file; do
             if [ -n "$file" ] && [ -f "$file" ]; then
-              file_count=$((file_count + 1))
-              echo "Processing file: $file"
-              echo "=== FILE $file_count: $file ===" >> file_snippets.txt
+              # Check if file is readable and get its size
+              file_size=$(wc -c < "$file" 2>/dev/null || echo 0)
               
-              # Get first 1000 characters of the file
-              head -c 1000 "$file" >> file_snippets.txt 2>/dev/null || echo "[Binary or unreadable file]" >> file_snippets.txt
-              echo "" >> file_snippets.txt
-              echo "--- END OF $file ---" >> file_snippets.txt
-              echo "" >> file_snippets.txt
+              # Skip files smaller than 300 characters
+              if [ "$file_size" -lt "$MIN_FILE_CHARS" ]; then
+                echo "Skipping $file (only $file_size chars, need min $MIN_FILE_CHARS)"
+                skipped_files=$((skipped_files + 1))
+                continue
+              fi
+              
+              # Calculate how many characters we can take from this file
+              remaining_space=$((MAX_TOTAL_CHARS - current_size))
+              
+              # Reserve space for file delimiter (approximately 100 chars)
+              file_delimiter_size=100
+              available_for_content=$((remaining_space - file_delimiter_size))
+              
+              if [ "$available_for_content" -lt "$MIN_FILE_CHARS" ]; then
+                echo "Stopping at $file - not enough space remaining (need $MIN_FILE_CHARS, have $available_for_content)"
+                break
+              fi
+              
+              file_count=$((file_count + 1))
+              echo "Processing file $file_count: $file (size: $file_size chars)"
+              
+              # Determine how much content to extract
+              if [ "$file_size" -le "$available_for_content" ]; then
+                # Take the whole file if it fits
+                chars_to_take=$file_size
+              else
+                # Take as much as we can fit
+                chars_to_take=$available_for_content
+              fi
+              
+              # Add file header and content
+              {
+                echo "=== FILE $file_count: $file ($chars_to_take chars) ==="
+                head -c "$chars_to_take" "$file" 2>/dev/null || echo "[Binary or unreadable file]"
+                echo ""
+                echo "--- END OF $file ---"
+                echo ""
+              } >> file_snippets.txt
+              
+              # Update current size
+              current_size=$(wc -c < file_snippets.txt)
+              echo "Current total size: $current_size chars"
+              
+              # Safety check
+              if [ "$current_size" -ge "$MAX_TOTAL_CHARS" ]; then
+                echo "Reached maximum size limit ($MAX_TOTAL_CHARS chars)"
+                break
+              fi
             fi
           done <<< "$CHANGED_FILES"
           
-          echo "Processed $file_count files"
+          final_size=$(wc -c < file_snippets.txt)
+          echo "Final summary:"
+          echo "- Processed $file_count files"
+          echo "- Skipped $skipped_files files (too small)"
+          echo "- Final size: $final_size characters"
+          echo "- Within limits: min 300, max 50000"
+          
+          # Verify we meet minimum requirements
+          if [ "$final_size" -lt 300 ]; then
+            echo "Warning: Final size ($final_size) is below minimum requirement (300 chars)"
+            echo "Adding padding to meet minimum..."
+            {
+              echo "Note: This PR contains very small files or no significant content changes."
+              printf "%*s" "$((300 - $(wc -c < file_snippets.txt)))" "" | tr ' ' '.'
+            } >> file_snippets.txt
+          fi
+          
           ls -l file_snippets.txt || true
-          echo "First 200 characters of combined snippets:"
-          head -c 200 file_snippets.txt || true
+          echo "Preview (first 300 chars):"
+          head -c 300 file_snippets.txt || true
 
       - name: Get AI License Compliance API auth token
         # Obtain an auth token from the Black Duck Authenticate endpoint using the
@@ -177,7 +246,7 @@ jobs:
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
             let body = '### Black Duck Snippet Scan Results\n';
-            body += '*Scanned first 1000 characters of each changed file in this PR*\n\n';
+            body += '*Scanned first 300-50000 characters of each changed file in this PR*\n\n';
             
             if (fs.existsSync('response.json')) {
               try {
