@@ -1,15 +1,10 @@
 name: Black Duck Snippet Scan
 
-# Request repository-level permissions for the workflow. Organization or repository
-# settings can still restrict these; see repository Actions settings if you still
-# get authorization errors.
+# Request repository-level permissions for the workflow
 permissions:
   contents: read
   pull-requests: write
   issues: write
-
-env:
-  GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
 on:
   pull_request:
@@ -19,10 +14,6 @@ jobs:
   snippet-scan:
     name: Scan PR with Black Duck Snippet API
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
 
     steps:
       - name: Checkout repository (PR head)
@@ -31,6 +22,24 @@ jobs:
           fetch-depth: 0
           # Explicitly check out the PR head so we scan the proposed changes
           ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
       - name: Extract PR file contents (300-50000 char limit)
         run: |
@@ -43,9 +52,12 @@ jobs:
           # Ensure refs are available
           git fetch --no-tags --prune --depth=1 origin "+refs/heads/*:refs/remotes/origin/*" || true
           
-          # Get list of changed files (added, modified, copied, renamed)
-          CHANGED_FILES=$(git diff --name-only --diff-filter=AMCR "$BASE_SHA" "$HEAD_SHA" || true)
-          echo "Changed files:"
+          # Get list of changed source code files only (added, modified, copied, renamed)
+          # Filter for common source code file extensions
+          CHANGED_FILES=$(git diff --name-only --diff-filter=AMCR "$BASE_SHA" "$HEAD_SHA" | \
+            grep -E '\.(java|js|jsx|ts|tsx|py|cpp|c|h|hpp|cs|go|rs|php|rb|swift|kt|scala|clj|pl|sh|bat|ps1|sql|yaml|yml|json|xml|html|css|scss|less|vue|svelte)$' || true)
+          
+          echo "Changed source code files:"
           echo "$CHANGED_FILES"
           
           # Create a combined file with snippets from each changed file
@@ -146,112 +158,232 @@ jobs:
           head -c 300 file_snippets.txt || true
 
       - name: Get AI License Compliance API auth token
-        # Obtain an auth token from the Black Duck Authenticate endpoint using the
-        # repository secret `BLACKDUCKSCA_TOKEN`. The response will be saved to
-        # `token.json` and the extracted token to `auth_token.txt` for subsequent calls.
         env:
           BLACKDUCKSCA_URL: ${{ vars.BLACKDUCKSCA_URL }}
           BLACKDUCKSCA_TOKEN: ${{ secrets.BLACKDUCKSCA_TOKEN }}
         run: |
-          if [ -z "$BLACKDUCKSCA_URL" ] || [ -z "$BLACKDUCKSCA_TOKEN" ]; then
-            echo "Missing BLACKDUCKSCA_URL (repository variable) or BLACKDUCKSCA_TOKEN (secret)"
-            echo "Add `BLACKDUCKSCA_URL` under Settings → Variables and `BLACKDUCKSCA_TOKEN` under Settings → Secrets."
-            exit 1
-          fi
-          AUTH_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/tokens/authenticate"
-          echo "Requesting auth token from $AUTH_ENDPOINT"
+          python3 << 'EOF'
+          import os
+          import sys
+          import json
+          import requests
+          from urllib.parse import urljoin
 
-          # Request token and save raw response
-          curl -s -X POST "$AUTH_ENDPOINT" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: token $BLACKDUCKSCA_TOKEN" \
-            -d '{}' -o token.json || true
+          def main():
+              # Check required environment variables
+              blackduck_url = os.getenv('BLACKDUCKSCA_URL')
+              blackduck_token = os.getenv('BLACKDUCKSCA_TOKEN')
+              
+              if not blackduck_url or not blackduck_token:
+                  print("Missing BLACKDUCKSCA_URL (repository variable) or BLACKDUCKSCA_TOKEN (secret)")
+                  print("Add `BLACKDUCKSCA_URL` under Settings → Variables and `BLACKDUCKSCA_TOKEN` under Settings → Secrets.")
+                  sys.exit(1)
+              
+              # Prepare authentication endpoint
+              auth_endpoint = urljoin(blackduck_url.rstrip('/') + '/', 'api/tokens/authenticate')
+              print(f"Requesting auth token from {auth_endpoint}")
+              
+              # Prepare headers and payload
+              headers = {
+                  'Content-Type': 'application/json',
+                  'Authorization': f'token {blackduck_token}'
+              }
+              
+              try:
+                  # Make authentication request
+                  response = requests.post(auth_endpoint, headers=headers, json={}, timeout=30)
+                  
+                  # Save raw response for debugging
+                  with open('token.json', 'w') as f:
+                      f.write(response.text)
+                  
+                  print("--- raw token response ---")
+                  print(response.text)
+                  
+                  # Check if request was successful
+                  if response.status_code >= 400:
+                      print(f"Authentication failed with status {response.status_code}")
+                      print(f"Response: {response.text}")
+                      sys.exit(1)
+                  
+                  # Try to parse JSON response
+                  try:
+                      token_data = response.json()
+                  except json.JSONDecodeError:
+                      # Fallback to raw content if not JSON
+                      auth_token = response.text.strip().strip('"')
+                  else:
+                      # Extract token from various possible fields
+                      auth_token = (
+                          token_data.get('bearerToken') or 
+                          token_data.get('token') or 
+                          token_data.get('auth_token') or 
+                          token_data.get('access_token') or 
+                          token_data.get('tokenValue') or 
+                          token_data.get('value') or 
+                          token_data.get('data')
+                      )
+                  
+                  if not auth_token:
+                      print("Failed to extract auth token from response")
+                      sys.exit(1)
+                  
+                  print(f"Auth token extracted (truncated): {auth_token[:8]}...")
+                  
+                  # Save token to file
+                  with open('auth_token.txt', 'w') as f:
+                      f.write(auth_token)
+                  
+                  print("Authentication successful")
+                  
+              except requests.exceptions.RequestException as e:
+                  print(f"Request failed: {e}")
+                  sys.exit(1)
+              except Exception as e:
+                  print(f"Unexpected error: {e}")
+                  sys.exit(1)
 
-          echo "--- raw token response ---"
-          cat token.json || true
-
-          # Try to extract a token from common JSON fields using jq (install if needed)
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y && sudo apt-get install -y jq || true
-          fi
-
-          AUTH_TOKEN=""
-          if command -v jq >/dev/null 2>&1; then
-            AUTH_TOKEN=$(jq -r '.bearerToken // .token // .auth_token // .access_token // .tokenValue // .value // .data // empty' token.json 2>/dev/null || true)
-          fi
-
-          # Fallback to raw content if jq extraction failed
-          if [ -z "$AUTH_TOKEN" ] || [ "$AUTH_TOKEN" = "null" ]; then
-            AUTH_TOKEN=$(tr -d '\r\n "' < token.json)
-          fi
-
-          if [ -z "$AUTH_TOKEN" ]; then
-            echo "Failed to obtain auth token from $AUTH_ENDPOINT"
-            exit 1
-          fi
-
-          echo "Auth token extracted (truncated): ${AUTH_TOKEN:0:8}..."
-          echo "$AUTH_TOKEN" > auth_token.txt
+          if __name__ == "__main__":
+              main()
+          EOF
 
       - name: Send file snippets to Black Duck Snippet API
         env:
           BLACKDUCKSCA_URL: ${{ vars.BLACKDUCKSCA_URL }}
         run: |
-          if [ ! -f auth_token.txt ]; then
-            echo "Missing auth token file (auth_token.txt)"
-            exit 1
-          fi
-          
-          if [ ! -f file_snippets.txt ]; then
-            echo "No file snippets to scan (file_snippets.txt not found)"
-            echo '{"snippetMatches": {}}' > response.json
-            exit 0
-          fi
-          
-          AUTH_TOKEN=$(cat auth_token.txt)
-          API_ENDPOINT="${BLACKDUCKSCA_URL%/}/api/snippet-matching"
-          echo "Posting file snippets to $API_ENDPOINT"
-          
-          # Get file size for logging
-          SNIPPET_SIZE=$(wc -c < file_snippets.txt)
-          echo "Sending $SNIPPET_SIZE characters of file snippets"
+          python3 << 'EOF'
+          import os
+          import sys
+          import json
+          import requests
+          from urllib.parse import urljoin
 
-          # The snippet-matching endpoint expects a plain text payload containing
-          # the source to scan. Send the file snippets as `text/plain` in the request
-          # body using --data-binary to preserve content.
-          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $AUTH_TOKEN" \
-            -H "Content-Type: text/plain" \
-            --data-binary @file_snippets.txt \
-            "$API_ENDPOINT")
+          def main():
+              # Check for auth token file
+              if not os.path.exists('auth_token.txt'):
+                  print("Missing auth token file (auth_token.txt)")
+                  sys.exit(1)
+              
+              # Check for file snippets
+              if not os.path.exists('file_snippets.txt'):
+                  print("No file snippets to scan (file_snippets.txt not found)")
+                  # Create empty response for downstream processing
+                  with open('response.json', 'w') as f:
+                      json.dump({"snippetMatches": {}}, f)
+                  return
+              
+              # Read auth token
+              with open('auth_token.txt', 'r') as f:
+                  auth_token = f.read().strip()
+              
+              # Read file snippets
+              with open('file_snippets.txt', 'r', encoding='utf-8', errors='ignore') as f:
+                  snippet_content = f.read()
+              
+              blackduck_url = os.getenv('BLACKDUCKSCA_URL')
+              if not blackduck_url:
+                  print("Missing BLACKDUCKSCA_URL environment variable")
+                  sys.exit(1)
+              
+              # Prepare API endpoint
+              api_endpoint = urljoin(blackduck_url.rstrip('/') + '/', 'api/snippet-matching')
+              print(f"Posting file snippets to {api_endpoint}")
+              
+              # Log snippet size
+              snippet_size = len(snippet_content.encode('utf-8'))
+              print(f"Sending {snippet_size} bytes of file snippets")
+              
+              # Prepare headers
+              headers = {
+                  'Authorization': f'Bearer {auth_token}',
+                  'Content-Type': 'text/plain; charset=utf-8'
+              }
+              
+              try:
+                  # Make API request
+                  response = requests.post(
+                      api_endpoint, 
+                      headers=headers, 
+                      data=snippet_content.encode('utf-8'),
+                      timeout=120  # 2 minute timeout for large snippets
+                  )
+                  
+                  print(f"HTTP status: {response.status_code}")
+                  
+                  # Save response
+                  with open('response.json', 'w') as f:
+                      f.write(response.text)
+                  
+                  # Show preview
+                  preview = response.text[:500] + '...' if len(response.text) > 500 else response.text
+                  print(f"Response preview: {preview}")
+                  
+                  # Check for errors
+                  if response.status_code >= 400:
+                      print(f"Black Duck Snippet API returned an error (status {response.status_code}).")
+                      print(f"Full error response: {response.text}")
+                      sys.exit(1)
+                  
+                  # Validate JSON response
+                  try:
+                      response.json()
+                      print("Response is valid JSON")
+                  except json.JSONDecodeError as e:
+                      print(f"Warning: Response is not valid JSON: {e}")
+                      print("Continuing with raw response...")
+                  
+                  print("Snippet scan completed successfully")
+                  
+              except requests.exceptions.RequestException as e:
+                  print(f"Request failed: {e}")
+                  sys.exit(1)
+              except Exception as e:
+                  print(f"Unexpected error: {e}")
+                  sys.exit(1)
 
-          echo "HTTP status: $HTTP_STATUS"
-          echo "Response preview (first 500 chars):"
-          head -c 500 response.json || true
-          
-          if [ "$HTTP_STATUS" -ge 400 ]; then
-            echo "Black Duck Snippet API returned an error (status $HTTP_STATUS)."
-            echo "Full error response:"
-            cat response.json || true
-            exit 1
-          fi
+          if __name__ == "__main__":
+              main()
+          EOF
 
       - name: Comment PR with Black Duck results
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
-          # Explicitly pass the workflow token to the action
-          github-token: ${{ secrets.GH_PAT }}
+          github-token: ${{ github.token }}
           script: |
             const fs = require('fs');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
+            
+            // Check for existing Black Duck comments to avoid duplicates
+            const comments = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number
+            });
+            
+            const existingComment = comments.data.find(comment => 
+              comment.body.includes('Black Duck Snippet Scan Results') &&
+              comment.user.login === 'github-actions[bot]'
+            );
+            
             let body = '### Black Duck Snippet Scan Results\n';
-            body += '*Scanned first 300-50000 characters of each changed file in this PR*\n\n';
+            body += '*Scanned first 300-50000 characters of each changed source code file in this PR*\n\n';
             
             if (fs.existsSync('response.json')) {
               try {
                 const respText = fs.readFileSync('response.json', 'utf8');
+                
+                // Validate JSON before parsing
+                if (!respText.trim()) {
+                  throw new Error('Empty response file');
+                }
+                
                 const response = JSON.parse(respText);
+                
+                // Enhanced response validation
+                if (!response || typeof response !== 'object') {
+                  throw new Error('Invalid response structure');
+                }
                 
                 // Check if snippetMatches exists and process the nested structure
                 if (response.snippetMatches && typeof response.snippetMatches === 'object') {
@@ -313,11 +445,17 @@ jobs:
                   body += '✅ **No snippet matches found** - No known open source code detected in the pull request changes.\n\n';
                 }
                 
-                // Add raw response as collapsible section for debugging
-                const maxLen = 32000;  // Reduced size to leave room for formatted content
+                // Add raw response as collapsible section for debugging (with smart truncation)
+                const maxLen = 30000;  // Leave room for formatted content
                 let rawDisplay = respText;
                 if (rawDisplay.length > maxLen) {
-                  rawDisplay = rawDisplay.slice(0, maxLen) + '\n... (truncated)';
+                  // Try to truncate at a logical JSON boundary
+                  const truncateAt = rawDisplay.lastIndexOf('},', maxLen - 100);
+                  if (truncateAt > maxLen / 2) {
+                    rawDisplay = rawDisplay.slice(0, truncateAt + 1) + '\n... (truncated)';
+                  } else {
+                    rawDisplay = rawDisplay.slice(0, maxLen) + '\n... (truncated)';
+                  }
                 }
                 body += '<details><summary>🔧 Raw API Response (for debugging)</summary>\n\n```json\n' + rawDisplay + '\n```\n</details>';
                 
@@ -327,7 +465,7 @@ jobs:
                 
                 // Fall back to raw content display
                 const respText = fs.readFileSync('response.json', 'utf8');
-                const maxLen = 32000;
+                const maxLen = 30000;
                 let display = respText;
                 if (display.length > maxLen) {
                   display = display.slice(0, maxLen) + '\n... (truncated)';
@@ -338,4 +476,21 @@ jobs:
               body += '❌ **No response captured from Black Duck** - The API request may have failed.\n\n';
             }
             
-            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            // Update existing comment or create new one
+            if (existingComment) {
+              console.log('Updating existing Black Duck comment...');
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body
+              });
+            } else {
+              console.log('Creating new Black Duck comment...');
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body
+              });
+            }
