@@ -1,5 +1,67 @@
 name: Black Duck Snippet Scan
 
+# =============================================================================
+# REUSABLE BLACK DUCK SNIPPET SCANNING WORKFLOW
+# =============================================================================
+#
+# This workflow can be used in multiple ways across different repositories:
+#
+# 1. DIRECT USAGE (copy this file to .github/workflows/):
+#    Simply copy this file to your repository's .github/workflows/ directory
+#    and configure the required secrets and variables.
+#
+# 2. WORKFLOW_CALL (reusable workflow):
+#    Call this workflow from another workflow using workflow_call trigger.
+#    Example:
+#      jobs:
+#        blackduck-scan:
+#          uses: your-org/your-repo/.github/workflows/blackducksca-snippet-workflow.yml@main
+#          with:
+#            min_file_chars: 500
+#            custom_comment_header: "Custom Security Scan Results"
+#            file_patterns: '\.(java|py|js)$'
+#
+# 3. CONFIGURATION OPTIONS:
+#    A. Via workflow inputs (when using workflow_call):
+#       - min_file_chars: Minimum characters per file (default: 300)
+#       - max_total_chars: Maximum total characters to scan (default: 50000)
+#       - file_patterns: Custom regex for file selection (optional)
+#       - python_version: Python version to use (default: 3.11)
+#       - api_timeout: API timeout in seconds (default: 120)
+#       - custom_comment_header: PR comment header text
+#       - skip_small_files: Whether to skip small files (default: true)
+#
+#    B. Via repository variables (Settings → Environments → Variables):
+#       - BD_MIN_FILE_CHARS: Override minimum file characters
+#       - BD_MAX_TOTAL_CHARS: Override maximum total characters
+#       - BD_PYTHON_VERSION: Override Python version
+#       - BD_API_TIMEOUT: Override API timeout
+#       - BD_COMMENT_HEADER: Override PR comment header
+#       - BD_SKIP_SMALL_FILES: Override small file skipping (true/false)
+#
+# 4. REQUIRED SETUP:
+#    - Repository Variable: BLACKDUCKSCA_URL (your Black Duck server URL)
+#    - Repository Secret: BLACKDUCKSCA_TOKEN (your Black Duck API token)
+#
+# 5. EXAMPLE CONFIGURATIONS:
+#
+#    Python Project:
+#      file_patterns: '\.(py|pyx|pxd|requirements\.txt|setup\.py|pyproject\.toml)$'
+#      min_file_chars: 200
+#
+#    JavaScript/Node.js Project:
+#      file_patterns: '\.(js|jsx|ts|tsx|json|package\.json|yarn\.lock)$'
+#      min_file_chars: 300
+#
+#    Java/Maven Project:
+#      file_patterns: '\.(java|xml|properties|gradle)$|^(pom\.xml|build\.gradle)$'
+#      min_file_chars: 400
+#
+#    Multi-language Project (default):
+#      Leave file_patterns empty for auto-detection of all supported languages
+#
+# =============================================================================
+
 # Request repository-level permissions for the workflow
 permissions:
   contents: read
@@ -9,6 +71,45 @@ permissions:
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  workflow_call:
+    inputs:
+      min_file_chars:
+        description: 'Minimum characters required per file to include in scan'
+        type: number
+        default: 300
+      max_total_chars:
+        description: 'Maximum total characters to send to Black Duck API'
+        type: number
+        default: 50000
+      file_patterns:
+        description: 'Custom file patterns to scan (regex). Leave empty for auto-detection.'
+        type: string
+        required: false
+      python_version:
+        description: 'Python version to use for the workflow'
+        type: string
+        default: '3.11'
+      api_timeout:
+        description: 'API request timeout in seconds'
+        type: number
+        default: 120
+      custom_comment_header:
+        description: 'Custom header text for PR comments'
+        type: string
+        default: 'Black Duck Snippet Scan Results'
+      skip_small_files:
+        description: 'Whether to skip files smaller than min_file_chars'
+        type: boolean
+        default: true
+
+env:
+  # Configurable via repository variables with fallbacks
+  MIN_FILE_CHARS: ${{ inputs.min_file_chars || vars.BD_MIN_FILE_CHARS || '300' }}
+  MAX_TOTAL_CHARS: ${{ inputs.max_total_chars || vars.BD_MAX_TOTAL_CHARS || '50000' }}
+  PYTHON_VERSION: ${{ inputs.python_version || vars.BD_PYTHON_VERSION || '3.11' }}
+  API_TIMEOUT: ${{ inputs.api_timeout || vars.BD_API_TIMEOUT || '120' }}
+  COMMENT_HEADER: ${{ inputs.custom_comment_header || vars.BD_COMMENT_HEADER || 'Black Duck Snippet Scan Results' }}
+  SKIP_SMALL_FILES: ${{ inputs.skip_small_files != false && (vars.BD_SKIP_SMALL_FILES != 'false') }}
 
 jobs:
   snippet-scan:
@@ -24,12 +125,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Cache Python dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -41,9 +142,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Extract PR file contents (300-50000 char limit)
+      - name: Extract PR file contents (${{ env.MIN_FILE_CHARS }}-${{ env.MAX_TOTAL_CHARS }} char limit)
         run: |
-          echo "Extracting file contents from PR (min 300, max 50000 total chars)..."
+          echo "Extracting file contents from PR (min $MIN_FILE_CHARS, max $MAX_TOTAL_CHARS total chars)..."
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           echo "Base: $BASE_SHA"
@@ -53,9 +154,17 @@ jobs:
           git fetch --no-tags --prune --depth=1 origin "+refs/heads/*:refs/remotes/origin/*" || true
           
           # Get list of changed source code files only (added, modified, copied, renamed)
-          # Filter for common source code file extensions
-          CHANGED_FILES=$(git diff --name-only --diff-filter=AMCR "$BASE_SHA" "$HEAD_SHA" | \
-            grep -E '\.(java|js|jsx|ts|tsx|py|cpp|c|h|hpp|cs|go|rs|php|rb|swift|kt|scala|clj|pl|sh|bat|ps1|sql|yaml|yml|json|xml|html|css|scss|less|vue|svelte)$' || true)
+          # Use custom file patterns if provided, otherwise use default patterns
+          if [ -n "${{ inputs.file_patterns }}" ]; then
+            echo "Using custom file patterns: ${{ inputs.file_patterns }}"
+            CHANGED_FILES=$(git diff --name-only --diff-filter=AMCR "$BASE_SHA" "$HEAD_SHA" | \
+              grep -E '${{ inputs.file_patterns }}' || true)
+          else
+            echo "Using default file patterns for source code detection"
+            # Filter for common source code file extensions and build files
+            CHANGED_FILES=$(git diff --name-only --diff-filter=AMCR "$BASE_SHA" "$HEAD_SHA" | \
+              grep -E '\.(java|js|jsx|ts|tsx|py|cpp|c|h|hpp|cs|go|rs|php|rb|swift|kt|scala|clj|pl|sh|bat|ps1|sql|yaml|yml|json|xml|html|css|scss|less|vue|svelte|toml|lock|gradle|properties|txt|md|dockerfile|makefile|cmake)$|^(Dockerfile|Makefile|CMakeLists\.txt|requirements\.txt|Pipfile|Gemfile|Cargo\.(toml|lock)|go\.(mod|sum)|build\.gradle|gradle\.properties|composer\.(json|lock)|package(-lock)?\.json|yarn\.lock|poetry\.lock)$' || true)
+          fi
           
           echo "Changed source code files:"
           echo "$CHANGED_FILES"
@@ -63,9 +172,9 @@ jobs:
           # Create a combined file with snippets from each changed file
           > file_snippets.txt
           
-          # Initialize counters and limits
-          MAX_TOTAL_CHARS=50000
-          MIN_FILE_CHARS=300
+          # Initialize counters and limits from environment variables
+          MAX_TOTAL_CHARS=${{ env.MAX_TOTAL_CHARS }}
+          MIN_FILE_CHARS=${{ env.MIN_FILE_CHARS }}
           current_size=0
           file_count=0
           skipped_files=0
@@ -84,8 +193,8 @@ jobs:
               # Check if file is readable and get its size
               file_size=$(wc -c < "$file" 2>/dev/null || echo 0)
               
-              # Skip files smaller than 300 characters
-              if [ "$file_size" -lt "$MIN_FILE_CHARS" ]; then
+              # Skip files smaller than minimum if enabled
+              if [ "${{ env.SKIP_SMALL_FILES }}" = "true" ] && [ "$file_size" -lt "$MIN_FILE_CHARS" ]; then
                 echo "Skipping $file (only $file_size chars, need min $MIN_FILE_CHARS)"
                 skipped_files=$((skipped_files + 1))
                 continue
@@ -141,15 +250,15 @@ jobs:
           echo "- Processed $file_count files"
           echo "- Skipped $skipped_files files (too small)"
           echo "- Final size: $final_size characters"
-          echo "- Within limits: min 300, max 50000"
+          echo "- Within limits: min $MIN_FILE_CHARS, max $MAX_TOTAL_CHARS"
           
           # Verify we meet minimum requirements
-          if [ "$final_size" -lt 300 ]; then
-            echo "Warning: Final size ($final_size) is below minimum requirement (300 chars)"
+          if [ "$final_size" -lt "$MIN_FILE_CHARS" ]; then
+            echo "Warning: Final size ($final_size) is below minimum requirement ($MIN_FILE_CHARS chars)"
             echo "Adding padding to meet minimum..."
             {
               echo "Note: This PR contains very small files or no significant content changes."
-              printf "%*s" "$((300 - $(wc -c < file_snippets.txt)))" "" | tr ' ' '.'
+              printf "%*s" "$(($MIN_FILE_CHARS - $(wc -c < file_snippets.txt)))" "" | tr ' ' '.'
             } >> file_snippets.txt
           fi
           
@@ -305,7 +414,7 @@ jobs:
                       api_endpoint, 
                       headers=headers, 
                       data=snippet_content.encode('utf-8'),
-                      timeout=120  # 2 minute timeout for large snippets
+                      timeout=int(os.getenv('API_TIMEOUT', '120'))  # Configurable timeout
                   )
                   
                   print(f"HTTP status: {response.status_code}")
@@ -361,13 +470,14 @@ jobs:
               issue_number
             });
             
-            const existingComment = comments.data.find(comment => 
-              comment.body.includes('Black Duck Snippet Scan Results') &&
+            const commentHeader = '${{ env.COMMENT_HEADER }}';
+            const existingComment = comments.data.find(comment =>
+              comment.body.includes(commentHeader) &&
               comment.user.login === 'github-actions[bot]'
             );
             
-            let body = '### Black Duck Snippet Scan Results\n';
-            body += '*Scanned first 300-50000 characters of each changed source code file in this PR*\n\n';
+            let body = `### ${commentHeader}\n`;
+            body += `*Scanned first ${{ env.MIN_FILE_CHARS }}-${{ env.MAX_TOTAL_CHARS }} characters of each changed source code file in this PR*\n\n`;
             
             if (fs.existsSync('response.json')) {
               try {
