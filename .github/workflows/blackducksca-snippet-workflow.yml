@@ -24,12 +24,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Cache Python dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -55,7 +55,7 @@ jobs:
           # Get list of changed source code files only (added, modified, copied, renamed)
           # Filter for common source code file extensions
           CHANGED_FILES=$(git diff --name-only --diff-filter=AMCR "$BASE_SHA" "$HEAD_SHA" | \
-            grep -E '\.(java|js|jsx|ts|tsx|py|cpp|c|h|hpp|cs|go|rs|php|rb|swift|kt|scala|clj|pl|sh|bat|ps1|sql|yaml|yml|json|xml|html|css|scss|less|vue|svelte)$' || true)
+            grep -E '\.(java|js|jsx|ts|tsx|py|cpp|c|h|hpp|cs|go|rs|php|rb|swift|kt|scala|clj|pl|sh|bat|ps1|sql|yaml|yml|json|xml|html|css|scss|less|vue|svelte|toml|lock|gradle|properties|txt|md|dockerfile|makefile|cmake)$|^(Dockerfile|Makefile|CMakeLists\.txt|requirements\.txt|Pipfile|Gemfile|Cargo\.(toml|lock)|go\.(mod|sum)|build\.gradle|gradle\.properties|composer\.(json|lock)|package(-lock)?\.json|yarn\.lock|poetry\.lock)$' || true)
           
           echo "Changed source code files:"
           echo "$CHANGED_FILES"
